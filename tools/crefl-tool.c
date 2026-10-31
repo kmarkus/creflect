@@ -234,29 +234,31 @@ static void print_str(const char *s, size_t n)
 static void print_scalar(crefl_val_t v, const crefl_type_t *t)
 {
 	int64_t i;
-	uint64_t u;
+	uint64_t u = 0; /* the float path leaves it unset */
 	double d;
 
 	if (crefl_kind(t) == CREFL_PTR) {
-		crefl_get_u64(v, &u);
+		if (crefl_get_u64(v, &u))
+			goto err;
 		printf("0x%llx", (unsigned long long)u);
 	} else if (crefl_kind(t) == CREFL_PRIM &&
 		   crefl_prim(t) >= CREFL_FLOAT) {
 		if (crefl_get_f64(v, &d))
-			printf("?");
-		else
-			printf("%.*g",
-			       crefl_prim(t) == CREFL_FLOAT ? FLT_DIG : DBL_DIG,
-			       d);
+			goto err;
+		printf("%.*g", crefl_prim(t) == CREFL_FLOAT ? FLT_DIG : DBL_DIG,
+		       d);
 	} else if (crefl_kind(t) == CREFL_PRIM && crefl_prim(t) == CREFL_BOOL) {
-		crefl_get_u64(v, &u);
+		if (crefl_get_u64(v, &u))
+			goto err;
 		printf("%s", u ? "true" : "false");
 	} else if (crefl_is_signed(t)) {
-		crefl_get_i64(v, &i);
+		if (crefl_get_i64(v, &i))
+			goto err;
 		u = (uint64_t)i;
 		printf("%lld", (long long)i);
 	} else {
-		crefl_get_u64(v, &u);
+		if (crefl_get_u64(v, &u))
+			goto err;
 		printf("%llu", (unsigned long long)u);
 	}
 
@@ -268,6 +270,9 @@ static void print_scalar(crefl_val_t v, const crefl_type_t *t)
 			break;
 		}
 	}
+	return;
+err:
+	printf("?");
 }
 
 static void dump(crefl_val_t v, const char *path);
