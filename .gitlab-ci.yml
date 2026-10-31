@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: LGPL-2.0-or-later
+# Copyright (C) 2019-2026 Markus Klotzbuecher <mk@mkio.de>
+
+# debian testing: the clang-format version the style test expects
+image: debian:testing
+
+# all tests: unit, style, oracles (gcc, clang, -m32, qemu), Lua 5.4
+test:
+  before_script:
+    - apt-get update
+    - apt-get -y install --no-install-recommends gcc libc6-dev
+    # gcc-multilib conflicts with the cross compilers, -m32 needs these
+    - v=$(gcc -dumpversion | cut -d. -f1)
+    - >
+      apt-get -y install --no-install-recommends
+      cmake make lib32gcc-$v-dev libc6-dev-i386 clang clang-format
+      python3 libcmocka-dev pkg-config lua5.4 liblua5.4-dev lua-unit
+      gcc-s390x-linux-gnu libc6-dev-s390x-cross
+      gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
+      gcc-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user
+  script:
+    # new random seeds per pipeline, failures name their seed
+    - cmake -B build -DCREFL_RANDOM_FIRST=$((CI_PIPELINE_IID * 10 + 1))
+    - cmake --build build -j$(nproc)
+    - ctest --test-dir build -j$(nproc) --output-on-failure
+
+# Lua bindings against the other Lua versions
+lua:
+  parallel:
+    matrix:
+      - LUA_VERSION: ['5.1', '5.2', '5.3', 'jit']
+  before_script:
+    - |
+      case $LUA_VERSION in
+      jit) pkgs="luajit libluajit-5.1-dev" ;;
+      *) pkgs="lua$LUA_VERSION liblua$LUA_VERSION-dev" ;;
+      esac
+      apt-get update
+      apt-get -y install --no-install-recommends \
+        cmake make gcc libc6-dev libcmocka-dev pkg-config lua-unit \
+        lua-compat53-dev $pkgs
+  script:
+    - cmake -B build -DCONFIG_LUA_VER=$LUA_VERSION
+    - cmake --build build -j$(nproc)
+    - ctest --test-dir build -R lua --output-on-failure
