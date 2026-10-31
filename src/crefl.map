@@ -1,0 +1,7 @@
+/* shared library exports: the public API, not crefl__ internals */
+{
+	global:
+		crefl_[a-z]*;
+	local:
+		*;
+};

@@ -1,0 +1,6 @@
+build/
+build-*/
+crash-*
+fuzz-*.log
+.cache/
+core.*

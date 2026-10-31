@@ -1,0 +1,9 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+libdir=@CMAKE_INSTALL_FULL_LIBDIR@
+includedir=@CMAKE_INSTALL_FULL_INCLUDEDIR@
+
+Name: creflect
+Description: reflection of C data types
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -lcreflect
+Cflags: -I${includedir}
