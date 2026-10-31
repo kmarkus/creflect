@@ -227,6 +227,13 @@ if(BUILD_TESTING)
 
 	include(test/crefl-tool.cmake)
 
+	# README examples: built and run, and kept identical to the README
+	add_executable(example-readme examples/readme.c)
+	target_link_libraries(example-readme PRIVATE creflect)
+	target_compile_options(example-readme PRIVATE ${CREFL_WARN})
+	add_test(NAME example-readme COMMAND example-readme)
+	add_test(NAME readme COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test/readme-check.sh)
+
 	# compiler oracle: one test per compiler/ABI that can build and run
 	file(GLOB CREFL_TESTCASES ${CMAKE_CURRENT_SOURCE_DIR}/test/testcases/*.h)
 
