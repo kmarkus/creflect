@@ -53,7 +53,11 @@ configure_file(src/creflect.pc.in creflect.pc @ONLY)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/creflect.pc
 	DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
 
-install(TARGETS creflect
+add_executable(crefl-tool tools/crefl-tool.c)
+target_link_libraries(crefl-tool PRIVATE creflect)
+target_compile_options(crefl-tool PRIVATE ${CREFL_WARN})
+
+install(TARGETS creflect crefl-tool
 	ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 	LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 	RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
@@ -83,6 +87,8 @@ if(BUILD_TESTING)
 	else()
 		message(STATUS "style: skipped, clang-format not found")
 	endif()
+
+	include(test/crefl-tool.cmake)
 
 	# compiler oracle: one test per compiler/ABI that can build and run
 	file(GLOB CREFL_TESTCASES ${CMAKE_CURRENT_SOURCE_DIR}/test/testcases/*.h)
