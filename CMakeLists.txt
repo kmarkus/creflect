@@ -63,6 +63,143 @@ install(TARGETS creflect crefl-tool
 	RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 	PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
+# Lua bindings, one module per Lua in CONFIG_LUA_VER: a list (commas
+# or semicolons) of 5.1..5.5, jit or lua (the unversioned lua.pc, as
+# installed by OE). Empty: the newest Lua found. CONFIG_LUA_BIN +
+# CONFIG_LUA_INCDIR: one module for that interpreter (luarocks).
+option(CREFL_LUA "build the Lua bindings" ON)
+set(CONFIG_LUA_VER "" CACHE STRING "Lua versions to build for, e.g. jit,5.4")
+set(CONFIG_LUA_BIN "" CACHE FILEPATH "Lua interpreter to build against")
+set(CONFIG_LUA_INCDIR "" CACHE PATH "Lua include dir to build against")
+# relative to the install prefix, lib/ as in Lua's default package.cpath
+set(CONFIG_LIBDIR "lib/lua" CACHE STRING
+	"Lua C module dir, modules go to <dir>/<version>")
+
+# module for one Lua: entry from CONFIG_LUA_VER, or "" for CONFIG_LUA_BIN
+function(crefl_lua entry)
+	string(MAKE_C_IDENTIFIER "CREFL_LUA_${entry}" P)
+	if("${entry}" STREQUAL "")
+		set(${P}_FOUND ON)
+		set(${P}_INCLUDE_DIRS "${CONFIG_LUA_INCDIR}")
+		set(bin "${CONFIG_LUA_BIN}")
+		# ask the interpreter itself, so luajit reports its 5.1 ABI version
+		execute_process(COMMAND ${bin} -e "io.write(_VERSION:match('%d+%.%d+'))"
+			OUTPUT_VARIABLE ver COMMAND_ERROR_IS_FATAL ANY)
+		execute_process(COMMAND ${bin} -e "io.write(jit and 'jit' or '')"
+			OUTPUT_VARIABLE jit)
+	else()
+		if("${entry}" STREQUAL "newest")
+			set(mods lua5.5 lua5.4 lua5.3 luajit lua5.2 lua5.1 lua)
+		elseif("${entry}" STREQUAL "jit")
+			set(mods luajit REQUIRED)
+		elseif("${entry}" STREQUAL "lua")
+			set(mods lua REQUIRED)
+		else()
+			set(mods lua${entry} REQUIRED)
+		endif()
+		pkg_search_module(${P} ${mods})
+		if(NOT ${P}_FOUND)
+			message(STATUS "lua: skipped, no Lua found")
+			return()
+		endif()
+		if("${${P}_MODULE_NAME}" STREQUAL "luajit")
+			pkg_get_variable(ver luajit abiver)
+			set(jit jit)
+		else()
+			# remove minor version (meta-oe pc file has no major_version)
+			string(REGEX MATCH "^([0-9]+\\.[0-9]+)" ver ${${P}_VERSION})
+			set(jit "")
+		endif()
+	endif()
+
+	# luajit and lua 5.1 would install to the same lib/lua/5.1
+	get_property(dirs GLOBAL PROPERTY CREFL_LUA_DIRS)
+	if("${ver}" IN_LIST dirs)
+		message(FATAL_ERROR "lua: two modules for lib/lua/${ver} (${entry})")
+	endif()
+	set_property(GLOBAL APPEND PROPERTY CREFL_LUA_DIRS ${ver})
+
+	if(jit)
+		set(name luajit)
+	else()
+		set(name lua${ver})
+	endif()
+	message(STATUS "lua: ${name} (${ver})")
+
+	if("${ver}" STREQUAL "5.1" OR "${ver}" STREQUAL "5.2")
+		# debian ships it for lua5.1 only, it supports 5.2 too
+		find_file(COMPAT53 compat-5.3.h PATH_SUFFIXES "lua${ver}" lua5.1)
+		if(NOT COMPAT53)
+			message(FATAL_ERROR "failed to find compat-5.3.h for lua${ver}, please install lua-compat53-dev")
+		endif()
+		get_filename_component(compat_dir ${COMPAT53} DIRECTORY)
+	endif()
+
+	# library compiled in, only luaopen_creflect is exported
+	set(t creflect-${name})
+	add_library(${t} MODULE lua/creflect_lua.c ${CREFL_SRC})
+	target_include_directories(${t} PRIVATE src ${${P}_INCLUDE_DIRS} ${compat_dir})
+	target_compile_options(${t} PRIVATE ${CREFL_WARN} -fvisibility=hidden)
+	set_target_properties(${t} PROPERTIES PREFIX "" OUTPUT_NAME creflect
+		LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/${name})
+	# self-contained module, so LTO can inline the library (10-20% faster)
+	if(CREFL_IPO)
+		set_property(TARGET ${t} PROPERTY INTERPROCEDURAL_OPTIMIZATION ON)
+	endif()
+	install(TARGETS ${t} LIBRARY DESTINATION ${CONFIG_LIBDIR}/${ver})
+
+	if(NOT BUILD_TESTING)
+		return()
+	endif()
+	if("${bin}" STREQUAL "")
+		# cached per module, the interpreter of one must not leak into the next
+		if(jit)
+			find_program(${P}_BIN luajit)
+		else()
+			find_program(${P}_BIN NAMES lua${ver})
+		endif()
+		set(bin ${${P}_BIN})
+	endif()
+	if(NOT bin)
+		message(STATUS "lua tests: skipped for ${name}, interpreter not found")
+		return()
+	endif()
+	# tests and luaunit load from the default package.path
+	set(env LUA_CPATH=${CMAKE_CURRENT_BINARY_DIR}/${name}/?.so)
+	execute_process(COMMAND ${bin} -e "require 'luaunit'"
+		RESULT_VARIABLE rc OUTPUT_QUIET ERROR_QUIET)
+	if(rc EQUAL 0)
+		add_test(NAME lua-${name}
+			COMMAND ${CMAKE_COMMAND} -E env ${env} ${bin} run.lua
+			WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/lua/test)
+	else()
+		message(STATUS "lua tests: skipped for ${name}, luaunit not found")
+	endif()
+	file(GLOB examples ${CMAKE_CURRENT_SOURCE_DIR}/lua/examples/*.lua)
+	foreach(ex ${examples})
+		get_filename_component(n ${ex} NAME_WE)
+		add_test(NAME lua-${name}-example-${n}
+			COMMAND ${CMAKE_COMMAND} -E env ${env} ${bin} ${ex}
+			WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/lua/examples)
+	endforeach()
+endfunction()
+
+if(CREFL_LUA)
+	find_package(PkgConfig REQUIRED)
+	include(CheckIPOSupported)
+	check_ipo_supported(RESULT CREFL_IPO LANGUAGES C)
+	if(NOT "${CONFIG_LUA_INCDIR}" STREQUAL "")
+		crefl_lua("")
+	elseif("${CONFIG_LUA_VER}" STREQUAL "")
+		crefl_lua(newest)
+	else()
+		string(REPLACE "," ";" vers "${CONFIG_LUA_VER}")
+		foreach(v ${vers})
+			crefl_lua(${v})
+		endforeach()
+	endif()
+endif()
+
 if(BUILD_TESTING)
 	find_package(cmocka REQUIRED)
 
