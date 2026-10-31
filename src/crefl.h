@@ -72,7 +72,11 @@ typedef struct crefl_member {
 	uint16_t bit_width;
 } crefl_member_t;
 
-/* val holds the bit pattern, cast to uint64_t if !crefl_is_signed(enum) */
+/**
+ * struct crefl_enumval - enumerator
+ * @name: enumerator name
+ * @val: value as bit pattern, cast to uint64_t if !crefl_is_signed(enum)
+ */
 typedef struct crefl_enumval {
 	const char *name;
 	int64_t val;
@@ -82,7 +86,8 @@ typedef struct crefl_enumval {
  * struct crefl_val - typed view on data, does not own @p
  * @t: type, NULL marks an invalid value (error)
  * @p: data
- * @bit_off, @bit_width: see crefl_member_t, bit_width == 0 if not a bitfield
+ * @bit_off: bitfields: see &struct crefl_member
+ * @bit_width: bitfields: width in bits, 0 if not a bitfield
  */
 typedef struct crefl_val {
 	const crefl_type_t *t;
@@ -91,7 +96,13 @@ typedef struct crefl_val {
 	uint16_t bit_width;
 } crefl_val_t;
 
-/* precompiled member access path, see crefl_path() */
+/**
+ * struct crefl_path - precompiled member access path, see crefl_path()
+ * @t: type of the addressed member or element
+ * @off: byte offset from the start of the root value
+ * @bit_off: bitfields: see &struct crefl_member
+ * @bit_width: bitfields: width in bits, 0 if not a bitfield
+ */
 typedef struct crefl_path {
 	const crefl_type_t *t;
 	size_t off;
@@ -102,103 +113,385 @@ typedef struct crefl_path {
 /*
  * context
  */
+
+/**
+ * crefl_ctx_new() - create an empty context
+ *
+ * Memory is allocated with malloc in chunks as types are added.
+ *
+ * Return: context or NULL if out of memory
+ */
 crefl_ctx_t *crefl_ctx_new(void);
 
 /**
- * crefl_ctx_new_static - create a context in a user supplied buffer
+ * crefl_ctx_new_static() - create a context in a user supplied buffer
+ * @buf: buffer, aligned internally, must outlive the context
+ * @len: size of @buf in bytes
  *
  * No malloc is used. Parsing fails with -ENOMEM once @buf is full.
+ *
+ * Return: context or NULL if @buf is NULL or too small
  */
 crefl_ctx_t *crefl_ctx_new_static(void *buf, size_t len);
+
+/**
+ * crefl_ctx_free() - free a context and all its types
+ * @ctx: context, may be NULL
+ *
+ * A static context is not freed, release its buffer instead.
+ * All types and names from @ctx are invalid afterwards.
+ */
 void crefl_ctx_free(crefl_ctx_t *ctx);
 
-/* define a constant usable in array sizes and enum values */
+/**
+ * crefl_define() - define a constant usable in array sizes and enum values
+ * @ctx: context
+ * @name: C identifier, must not be a typedef name
+ * @val: value
+ *
+ * Redefining an existing constant overwrites its value.
+ *
+ * Return: 0, -EINVAL (bad name, typedef) or -ENOMEM
+ */
 int crefl_define(crefl_ctx_t *ctx, const char *name, int64_t val);
 
 /**
- * crefl_parse - parse C declarations
+ * crefl_parse() - parse C declarations
+ * @ctx: context to add the types to
+ * @src: NUL terminated C source
  *
  * Accepts struct, union, enum and typedef declarations. Preprocessor
  * lines and comments are skipped, other declarations (functions,
  * variables) are parsed and dropped. Not validating: run headers
  * through the compiler (or gcc -E -P) for checking.
  *
- * @return 0 or <0 (-EINVAL, -ENOMEM), see crefl_errmsg()
+ * On error all types and symbols added by this call are rolled back.
+ *
+ * Return: 0 or <0 (-EINVAL, -ENOMEM), see crefl_errmsg()
  */
 int crefl_parse(crefl_ctx_t *ctx, const char *src);
+
+/**
+ * crefl_errmsg() - message of the last error
+ * @ctx: context
+ *
+ * Return: message, "" if the last crefl_parse() or crefl_type()
+ * succeeded. Valid until the next call on @ctx.
+ */
 const char *crefl_errmsg(const crefl_ctx_t *ctx);
 
-/* all named types (tags and typedefs) in definition order */
+/**
+ * crefl_ntypes() - number of named types
+ * @ctx: context
+ *
+ * Return: number of tags and typedefs, see crefl_type_at()
+ */
 size_t crefl_ntypes(const crefl_ctx_t *ctx);
+
+/**
+ * crefl_type_at() - named type by index
+ * @ctx: context
+ * @i: index, 0 to crefl_ntypes() - 1, in definition order
+ *
+ * Return: type or NULL if @i is out of range
+ */
 const crefl_type_t *crefl_type_at(const crefl_ctx_t *ctx, size_t i);
 
 /**
- * crefl_type - lookup or construct a type from a type name
+ * crefl_type() - lookup or construct a type from a type name
+ * @ctx: context, derived pointer and array types are added to it
  * @decl: e.g. "struct foo", "foo_t", "unsigned int[4]", "char *"
- * @return type or NULL
+ *
+ * Return: type or NULL, see crefl_errmsg()
  */
 const crefl_type_t *crefl_type(crefl_ctx_t *ctx, const char *decl);
 
 /*
  * type introspection
+ *
+ * @t must not be NULL. Except for crefl_kind(), crefl_prim(),
+ * crefl_name() and crefl_elem(), typedefs are resolved first.
+ */
+
+/**
+ * crefl_kind() - kind of a type
+ * @t: type
+ *
+ * Return: kind, CREFL_TYPEDEF for typedefs
  */
 enum crefl_kind crefl_kind(const crefl_type_t *t);
-enum crefl_prim crefl_prim(const crefl_type_t *t); /* CREFL_PRIM only */
-/* tag, typedef or prim name, NULL if anonymous */
+
+/**
+ * crefl_prim() - primitive type
+ * @t: type of kind CREFL_PRIM
+ *
+ * Return: primitive, undefined for other kinds
+ */
+enum crefl_prim crefl_prim(const crefl_type_t *t);
+
+/**
+ * crefl_name() - name of a type
+ * @t: type
+ *
+ * Return: tag, typedef or primitive name, NULL if anonymous
+ */
 const char *crefl_name(const crefl_type_t *t);
+
+/**
+ * crefl_sizeof() - size of a type
+ * @t: type
+ *
+ * Return: size in bytes as sizeof() would, 0 if incomplete
+ */
 size_t crefl_sizeof(const crefl_type_t *t);
+
+/**
+ * crefl_alignof() - alignment of a type
+ * @t: type
+ *
+ * Return: alignment in bytes as _Alignof() would
+ */
 size_t crefl_alignof(const crefl_type_t *t);
+
+/**
+ * crefl_is_complete() - check if a type is complete
+ * @t: type
+ *
+ * Return: non-zero if complete (defined, size known)
+ */
 int crefl_is_complete(const crefl_type_t *t);
+
+/**
+ * crefl_is_packed() - check for __attribute__((packed))
+ * @t: type
+ *
+ * Return: 1 if packed, 0 otherwise
+ */
 int crefl_is_packed(const crefl_type_t *t);
-int crefl_is_signed(const crefl_type_t *t); /* integer, enum, char */
-/* ptr, array, typedef target */
+
+/**
+ * crefl_is_signed() - check if a type is signed
+ * @t: type
+ *
+ * Plain char follows the host ABI.
+ *
+ * Return: 1 for signed integers, signed enums and floats, 0 otherwise
+ */
+int crefl_is_signed(const crefl_type_t *t);
+
+/**
+ * crefl_elem() - element type
+ * @t: type
+ *
+ * Return: pointer target, array element or typedef target, NULL for
+ * other kinds
+ */
 const crefl_type_t *crefl_elem(const crefl_type_t *t);
-/* strip typedefs */
+
+/**
+ * crefl_resolve() - strip typedefs
+ * @t: type, may be NULL
+ *
+ * Return: first type that is not a typedef
+ */
 const crefl_type_t *crefl_resolve(const crefl_type_t *t);
 
-/* array length, member count or enumerator count */
+/**
+ * crefl_len() - number of elements
+ * @t: type
+ *
+ * Return: array length (0 for flexible arrays), member count or
+ * enumerator count
+ */
 size_t crefl_len(const crefl_type_t *t);
+
+/**
+ * crefl_member() - struct or union member by index
+ * @t: struct or union type
+ * @i: index, 0 to crefl_len() - 1
+ *
+ * Return: member or NULL if @t is not a struct or union or @i is out
+ * of range
+ */
 const crefl_member_t *crefl_member(const crefl_type_t *t, size_t i);
+
+/**
+ * crefl_enumval() - enumerator by index
+ * @t: enum type
+ * @i: index, 0 to crefl_len() - 1
+ *
+ * Return: enumerator or NULL if @t is not an enum or @i is out of range
+ */
 const crefl_enumval_t *crefl_enumval(const crefl_type_t *t, size_t i);
 
-/* print as C declaration with layout comments */
+/**
+ * crefl_print() - print a type as C declaration with layout comments
+ * @t: type
+ * @f: output stream
+ *
+ * Return: 0 or -EINVAL if @t is NULL
+ */
 int crefl_print(const crefl_type_t *t, FILE *f);
 
 /*
  * instances
+ *
+ * Functions returning a crefl_val_t signal errors with an invalid
+ * value (.t == NULL), which all value functions accept and reject.
  */
-crefl_val_t crefl_new(const crefl_type_t *t); /* zeroed, malloc */
+
+/**
+ * crefl_new() - allocate a zeroed instance
+ * @t: complete type with non-zero size
+ *
+ * Return: value owning malloc'ed memory, release with crefl_free()
+ */
+crefl_val_t crefl_new(const crefl_type_t *t);
+
+/**
+ * crefl_free() - free an instance from crefl_new()
+ * @v: value, may be invalid
+ */
 void crefl_free(crefl_val_t v);
+
+/**
+ * crefl_wrap() - view existing data as a type
+ * @t: type
+ * @p: data, not owned, must be at least crefl_sizeof(@t) bytes
+ *
+ * Return: value, invalid if @t or @p is NULL
+ */
 crefl_val_t crefl_wrap(const crefl_type_t *t, void *p);
 
 /**
- * crefl_path - resolve a member path once for fast access
+ * crefl_path() - resolve a member path once for fast access
+ * @t: root type
  * @expr: C member designator, e.g. "a.b[3].c", "[2].x" for arrays.
  *        Anonymous struct/union members are looked through.
- * @return 0 or -ENOENT, -EINVAL, -ERANGE (index)
+ * @out: resolved path, use with crefl_at()
+ *
+ * Return: 0 or -ENOENT, -EINVAL, -ERANGE (index)
  */
 int crefl_path(const crefl_type_t *t, const char *expr, crefl_path_t *out);
-/* no checks, O(1) */
+
+/**
+ * crefl_at() - apply a precompiled path to a value
+ * @v: value of the root type the path was resolved on
+ * @p: path from crefl_path()
+ *
+ * O(1) and unchecked: @v must be valid and of the path's root type.
+ *
+ * Return: member value
+ */
 crefl_val_t crefl_at(crefl_val_t v, const crefl_path_t *p);
-/* crefl_path + crefl_at */
+
+/**
+ * crefl_get() - access a member by path, crefl_path() + crefl_at()
+ * @v: value
+ * @expr: member designator, see crefl_path()
+ *
+ * Return: member value, invalid on error
+ */
 crefl_val_t crefl_get(crefl_val_t v, const char *expr);
-crefl_val_t crefl_index(crefl_val_t v, size_t i); /* array element */
-crefl_val_t crefl_deref(crefl_val_t v); /* follow pointer */
+
+/**
+ * crefl_index() - array element
+ * @v: array value
+ * @i: index, unbounded for flexible arrays
+ *
+ * Return: element value, invalid if @v is not an array or @i is out
+ * of range
+ */
+crefl_val_t crefl_index(crefl_val_t v, size_t i);
+
+/**
+ * crefl_deref() - follow a pointer
+ * @v: pointer value
+ *
+ * Return: value of the pointer target, invalid if @v is not a pointer
+ * or the pointer is NULL
+ */
+crefl_val_t crefl_deref(crefl_val_t v);
 
 /*
  * scalar access with conversion. Integers, bool, enums, bitfields,
- * floats; u64 also accepts pointers. Setters return -ERANGE if the
- * value does not fit, -EINVAL on type mismatch.
+ * floats; u64 also accepts pointers. Getters return -ERANGE if the
+ * value does not fit @out, setters if @x does not fit the type,
+ * both -EINVAL on type mismatch or invalid @v.
+ */
+
+/**
+ * crefl_get_i64() - read a scalar as int64_t
+ * @v: value
+ * @out: result
+ *
+ * Return: 0, -EINVAL or -ERANGE
  */
 int crefl_get_i64(crefl_val_t v, int64_t *out);
+
+/**
+ * crefl_get_u64() - read a scalar or pointer as uint64_t
+ * @v: value
+ * @out: result
+ *
+ * Return: 0, -EINVAL or -ERANGE (negative value)
+ */
 int crefl_get_u64(crefl_val_t v, uint64_t *out);
+
+/**
+ * crefl_get_f64() - read a scalar as double
+ * @v: value
+ * @out: result, large integers are rounded
+ *
+ * Return: 0 or -EINVAL
+ */
 int crefl_get_f64(crefl_val_t v, double *out);
+
+/**
+ * crefl_set_i64() - write an int64_t to a scalar
+ * @v: value
+ * @x: new value
+ *
+ * Return: 0, -EINVAL or -ERANGE
+ */
 int crefl_set_i64(crefl_val_t v, int64_t x);
+
+/**
+ * crefl_set_u64() - write a uint64_t to a scalar or pointer
+ * @v: value
+ * @x: new value
+ *
+ * Return: 0, -EINVAL or -ERANGE
+ */
 int crefl_set_u64(crefl_val_t v, uint64_t x);
+
+/**
+ * crefl_set_f64() - write a double to a scalar
+ * @v: value
+ * @x: new value, integer targets accept only exact integral values
+ *
+ * Return: 0, -EINVAL or -ERANGE
+ */
 int crefl_set_f64(crefl_val_t v, double x);
 
-/* char arrays: copy incl. NUL, -ERANGE if it does not fit */
+/**
+ * crefl_set_str() - copy a string into a char array
+ * @v: char array value
+ * @s: string, copied incl. NUL, the rest of the array is zeroed
+ *
+ * Return: 0, -EINVAL (not a char array) or -ERANGE if @s does not fit
+ */
 int crefl_set_str(crefl_val_t v, const char *s);
-int crefl_copy(crefl_val_t dst, crefl_val_t src); /* same type only */
+
+/**
+ * crefl_copy() - copy a value
+ * @dst: destination
+ * @src: source of the same type after resolving typedefs
+ *
+ * Overlapping values and bitfields are handled.
+ *
+ * Return: 0 or -EINVAL (type mismatch, invalid value)
+ */
+int crefl_copy(crefl_val_t dst, crefl_val_t src);
 
 #endif
