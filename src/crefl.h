@@ -7,9 +7,15 @@
 /*
  * crefl: reflection of C data types
  *
- * Types are parsed from C declarations into a context. They are
- * immutable once complete and live until the context is freed.
- * Layout follows the host compiler's ABI (SysV/AAPCS, gcc/clang).
+ * Types are parsed from C declarations into a context. Once complete
+ * they are immutable and live until the context is freed. Their
+ * layout follows the host compiler's ABI (SysV/AAPCS, gcc/clang).
+ *
+ * Memory: only crefl_ctx_new() and crefl_new() call malloc directly.
+ * crefl_define(), crefl_parse() and crefl_type() take memory from the
+ * context, i.e. from malloc'ed chunks or from the buffer of a static
+ * context. All other functions never allocate, so once the types are
+ * set up, value access is safe for real-time code.
  */
 
 #include <stddef.h>
@@ -117,7 +123,9 @@ typedef struct crefl_path {
 /**
  * crefl_ctx_new() - create an empty context
  *
- * Memory is allocated with malloc in chunks as types are added.
+ * The context grows in malloc'ed chunks of 4 KiB as types are added.
+ *
+ * Context: allocates with malloc.
  *
  * Return: context or NULL if out of memory
  */
@@ -128,7 +136,15 @@ crefl_ctx_t *crefl_ctx_new(void);
  * @buf: buffer, aligned internally, must outlive the context
  * @len: size of @buf in bytes
  *
- * No malloc is used. Parsing fails with -ENOMEM once @buf is full.
+ * The context never calls malloc, so parsing fails with -ENOMEM once
+ * @buf is full. As a rough guide for 64-bit hosts, the context itself
+ * needs 2.3 KiB, plus about 200 bytes per named type (tag, typedef or
+ * constant) and 100 bytes per member or enumerator. For example,
+ * 20 structs with 10 members each fit in 20 KiB. Memory is not
+ * reclaimed after a failed parse, nor for the pointer and array types
+ * that crefl_type() derives. So leave some headroom and look up types
+ * once at init. The safest way to size @buf is to try: find the
+ * smallest @len for which parsing your headers succeeds.
  *
  * Return: context or NULL if @buf is NULL or too small
  */
@@ -151,6 +167,8 @@ void crefl_ctx_free(crefl_ctx_t *ctx);
  *
  * Redefining an existing constant overwrites its value.
  *
+ * Context: allocates from @ctx for a new constant.
+ *
  * Return: 0, -EINVAL (bad name, typedef) or -ENOMEM
  */
 int crefl_define(crefl_ctx_t *ctx, const char *name, int64_t val);
@@ -161,11 +179,14 @@ int crefl_define(crefl_ctx_t *ctx, const char *name, int64_t val);
  * @src: NUL terminated C source
  *
  * Accepts struct, union, enum and typedef declarations. Preprocessor
- * lines and comments are skipped, other declarations (functions,
- * variables) are parsed and dropped. Not validating: run headers
- * through the compiler (or gcc -E -P) for checking.
+ * lines and comments are skipped, while other declarations such as
+ * functions and variables are parsed and dropped. The parser does not
+ * validate the source, so let the compiler check your headers (and
+ * gcc -E -P expand their macros) first.
  *
  * On error all types and symbols added by this call are rolled back.
+ *
+ * Context: allocates from @ctx.
  *
  * Return: 0 or <0 (-EINVAL, -ENOMEM), see crefl_errmsg()
  */
@@ -175,8 +196,8 @@ int crefl_parse(crefl_ctx_t *ctx, const char *src);
  * crefl_errmsg() - message of the last error
  * @ctx: context
  *
- * Return: message, "" if the last crefl_parse() or crefl_type()
- * succeeded. Valid until the next call on @ctx.
+ * Return: message, or "" if the last crefl_parse() or crefl_type()
+ * succeeded. It stays valid until the next call on @ctx.
  */
 const char *crefl_errmsg(const crefl_ctx_t *ctx);
 
@@ -199,8 +220,14 @@ const crefl_type_t *crefl_type_at(const crefl_ctx_t *ctx, size_t i);
 
 /**
  * crefl_type() - lookup or construct a type from a type name
- * @ctx: context, derived pointer and array types are added to it
+ * @ctx: context
  * @decl: e.g. "struct foo", "foo_t", "unsigned int[4]", "char *"
+ *
+ * Named types are only looked up. Pointer and array types such as
+ * "char *" are created anew on every call and added to @ctx, so look
+ * them up once and keep the result.
+ *
+ * Context: allocates from @ctx for pointer, array and unknown tag types.
  *
  * Return: type or NULL, see crefl_errmsg()
  */
@@ -209,8 +236,9 @@ const crefl_type_t *crefl_type(crefl_ctx_t *ctx, const char *decl);
 /*
  * type introspection
  *
- * @t must not be NULL. Except for crefl_kind(), crefl_prim(),
- * crefl_name() and crefl_elem(), typedefs are resolved first.
+ * These functions require a non-NULL @t and resolve typedefs first,
+ * except crefl_kind(), crefl_prim(), crefl_name() and crefl_elem(),
+ * which look at @t itself.
  */
 
 /**
@@ -344,7 +372,10 @@ int crefl_print(const crefl_type_t *t, FILE *f);
  * crefl_new() - allocate a zeroed instance
  * @t: complete type with non-zero size
  *
- * Return: value owning malloc'ed memory, release with crefl_free()
+ * Context: allocates with malloc.
+ *
+ * Return: value owning its memory, to be released with crefl_free().
+ * Invalid if out of memory.
  */
 crefl_val_t crefl_new(const crefl_type_t *t);
 
@@ -358,6 +389,10 @@ void crefl_free(crefl_val_t v);
  * crefl_wrap() - view existing data as a type
  * @t: type
  * @p: data, not owned, must be at least crefl_sizeof(@t) bytes
+ *
+ * This attaches to memory that already exists, e.g. a struct in your
+ * program (&my_cfg) or a received packet. @p needs no alignment and
+ * must stay valid as long as the value is used.
  *
  * Return: value, invalid if @t or @p is NULL
  */
@@ -379,16 +414,20 @@ int crefl_path(const crefl_type_t *t, const char *expr, crefl_path_t *out);
  * @v: value of the root type the path was resolved on
  * @p: path from crefl_path()
  *
- * O(1) and unchecked: @v must be valid and of the path's root type.
+ * This takes constant time and does no checks, so @v must be valid and
+ * of the root type the path was resolved on.
  *
  * Return: member value
  */
 crefl_val_t crefl_at(crefl_val_t v, const crefl_path_t *p);
 
 /**
- * crefl_get() - access a member by path, crefl_path() + crefl_at()
+ * crefl_get() - access a member by path
  * @v: value
  * @expr: member designator, see crefl_path()
+ *
+ * Same as crefl_path() followed by crefl_at(), but parses @expr on
+ * every call. Use crefl_path() in hot paths.
  *
  * Return: member value, invalid on error
  */
@@ -414,10 +453,12 @@ crefl_val_t crefl_index(crefl_val_t v, size_t i);
 crefl_val_t crefl_deref(crefl_val_t v);
 
 /*
- * scalar access with conversion. Integers, bool, enums, bitfields,
- * floats; u64 also accepts pointers. Getters return -ERANGE if the
- * value does not fit @out, setters if @x does not fit the type,
- * both -EINVAL on type mismatch or invalid @v.
+ * scalar access with conversion
+ *
+ * Works on integers, bool, enums, bitfields and floats, and the u64
+ * variants also on pointers. Getters return -ERANGE if the value does
+ * not fit @out and setters if @x does not fit the type. Both return
+ * -EINVAL on a type mismatch or an invalid @v.
  */
 
 /**
