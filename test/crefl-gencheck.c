@@ -80,6 +80,10 @@ static void emit_int(const char *tn, const char *path, const crefl_type_t *t,
 			    1 :
 			    crefl_sizeof(rt) * 8;
 
+	/* 128 bit: the API reads and writes 64 bit values */
+	if (w > 64)
+		w = 64;
+
 	if (crefl_is_signed(rt)) {
 		if (w == 64) {
 			CHECK("\tACC_I(\"%s\", %s, %s, (-9223372036854775807LL - 1));\n",
@@ -137,11 +141,26 @@ static void walk_members(const char *tn, const char *prefix,
 	}
 }
 
+/* opaque, its bytes are not accessible from C */
+static int is_va_list(const crefl_type_t *t)
+{
+	for (; crefl_kind(t) == CREFL_TYPEDEF; t = crefl_elem(t)) {
+		if (strcmp(crefl_name(t), "__builtin_va_list") == 0)
+			return 1;
+	}
+	return 0;
+}
+
 static void visit(const char *tn, const char *path, const crefl_type_t *t,
 		  unsigned int w)
 {
 	const crefl_type_t *rt = crefl_resolve(t);
 	char sub[PATH_LEN];
+
+	if (is_va_list(t)) {
+		CHECK("\tOFF(\"%s\", %s, %s);\n", tn, tn, path);
+		return;
+	}
 
 	if (w) {
 		emit_int(tn, path, t, w);
@@ -260,8 +279,9 @@ int main(int argc, char **argv)
 	for (int i = 0; i < nfn; i++)
 		printf("\tcheck_%d();\n", i);
 	printf("\n\troundtrip();\n");
-	printf("\traw_check(raw, %d);\n",
-	       strstr(raw, "#define") || strstr(raw, "#include \""));
+	printf("\traw_check(raw, %d);\n", strstr(raw, "#define") ||
+						  strstr(raw, "#include \"") ||
+						  strstr(raw, "#if"));
 	printf("\n\treturn report();\n}\n");
 	free(src);
 	free(raw);

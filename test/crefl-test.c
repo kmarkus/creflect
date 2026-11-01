@@ -567,7 +567,13 @@ static const struct {
 	{ "int typeof(int) x;", "conflicting type specifiers" },
 	{ "typeof(1 + 2) x;", "typeof expression" },
 	{ "struct s { _Complex double c; };", "unsupported" },
-	{ "__int128 x;", "unsupported" },
+	{ "_BitInt(8) x;", "unsupported" },
+	{ "long __int128 x;", "invalid type specifiers" },
+	{ "typedef float f __attribute__((mode(SF)));", "mode 'SF'" },
+	{ "typedef double *d __attribute__((mode(DI)));", "non-integer" },
+	{ "typedef int m __attribute__((mode));", "expected '('" },
+	{ "typedef int m __attribute__((mode()));", "expected mode" },
+	{ "typedef int m __attribute__((mode(DI x)));", "expected ')'" },
 
 	/* bitfields */
 	{ "struct s { int a : 33; };", "exceeds its type" },
@@ -601,11 +607,13 @@ static const struct {
 	{ "struct s { int * __attribute__((aligned(8))) p; };",
 	  "aligned attribute here" },
 	{ "typedef int x __attribute__((aligned(8)));", "aligned typedef" },
+	{ "typedef int x __attribute__((aligned(2)));", "aligned typedef" },
 	{ "struct s { int a; } __attribute__((ms_struct));",
 	  "unsupported attribute" },
 	{ "typedef int v4 __attribute__((vector_size(16)));",
 	  "unsupported attribute" },
-	{ "typedef int x __attribute__((mode(DI)));", "unsupported attribute" },
+	{ "typedef int x __attribute__((vector_size(16)));",
+	  "unsupported attribute" },
 
 	/* declarators and arrays */
 	{ "struct s { int a[-1]; };", "negative array size" },
@@ -847,6 +855,58 @@ static void test_api_edges(void **state)
 	crefl_free(qv);
 	crefl_ctx_free(q);
 #endif
+
+#ifdef __SIZEOF_INT128__
+	/* 128 bit integers: full layout, access within 64 bits */
+	crefl_ctx_t *w = parse("struct w { char c; __int128 i; "
+			       "unsigned __int128 u; __uint128_t t; };");
+	const crefl_type_t *wt = crefl_type(w, "struct w");
+	crefl_val_t wv = crefl_new(wt);
+	struct w {
+		char c;
+		__int128 i;
+		unsigned __int128 u;
+		__uint128_t t;
+	} *wp = wv.p;
+	int64_t i64;
+
+	assert_int_equal(crefl_sizeof(wt), sizeof(struct w));
+	assert_int_equal(crefl_alignof(wt), _Alignof(struct w));
+	assert_int_equal(crefl_set_i64(crefl_get(wv, "i"), INT64_MIN), 0);
+	assert_true(wp->i == INT64_MIN);
+	assert_int_equal(crefl_get_i64(crefl_get(wv, "i"), &i64), 0);
+	assert_true(i64 == INT64_MIN);
+	assert_int_equal(crefl_set_i64(crefl_get(wv, "u"), -1), -ERANGE);
+	assert_int_equal(crefl_set_u64(crefl_get(wv, "u"), UINT64_MAX), 0);
+	assert_true(wp->u == UINT64_MAX);
+	wp->i = (__int128)1 << 64;
+	assert_int_equal(crefl_get_i64(crefl_get(wv, "i"), &i64), -ERANGE);
+	assert_int_equal(crefl_get_f64(crefl_get(wv, "i"), &d), 0);
+	assert_true(d == 18446744073709551616.0);
+	wp->i = -((__int128)1 << 64);
+	assert_int_equal(crefl_get_u64(crefl_get(wv, "i"), &x), -ERANGE);
+	wp->t = (unsigned __int128)1 << 64;
+	assert_int_equal(crefl_get_u64(crefl_get(wv, "t"), &x), -ERANGE);
+	crefl_free(wv);
+	crefl_ctx_free(w);
+#endif
+
+	/* va_list: opaque, but laid out like the compiler */
+	crefl_ctx_t *va = parse("typedef __builtin_va_list my_va; "
+				"struct va { char c; my_va ap; }; "
+				"typedef int al __attribute__((aligned(4)));");
+	struct va {
+		char c;
+		va_list ap;
+	};
+
+	assert_int_equal(crefl_sizeof(crefl_type(va, "struct va")),
+			 sizeof(struct va));
+	assert_int_equal(crefl_alignof(crefl_type(va, "struct va")),
+			 _Alignof(struct va));
+	assert_int_equal(crefl_sizeof(crefl_type(va, "my_va")),
+			 sizeof(va_list));
+	crefl_ctx_free(va);
 
 	/* printing of incomplete, derived and flexible types */
 	f = open_memstream(&out, &len);

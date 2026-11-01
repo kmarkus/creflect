@@ -96,6 +96,7 @@ int crefl__types_push(crefl_ctx_t *ctx, const crefl_type_t *t);
 struct crefl_attr {
 	uint8_t packed;
 	size_t align; /* aligned(n), 0 if not set */
+	uint8_t mode; /* mode(m) of integers in bytes, 0 if not set */
 };
 
 /* compute member offsets, size and alignment of struct/union @t */

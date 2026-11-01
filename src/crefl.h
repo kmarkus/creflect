@@ -54,6 +54,8 @@ enum crefl_prim {
 	CREFL_ULONG,
 	CREFL_LLONG,
 	CREFL_ULLONG,
+	CREFL_INT128, /* incomplete if the compiler lacks __int128 */
+	CREFL_UINT128,
 	CREFL_FLOAT,
 	CREFL_DOUBLE,
 	CREFL_LDOUBLE,
@@ -140,11 +142,13 @@ crefl_ctx_t *crefl_ctx_new(void);
  * @buf is full. As a rough guide for 64-bit hosts, the context itself
  * needs 2.3 KiB, plus about 200 bytes per named type (tag, typedef or
  * constant) and 100 bytes per member or enumerator. For example,
- * 20 structs with 10 members each fit in 20 KiB. Memory is not
- * reclaimed after a failed parse, nor for the pointer and array types
- * that crefl_type() derives. So leave some headroom and look up types
- * once at init. The safest way to size @buf is to try: find the
- * smallest @len for which parsing your headers succeeds.
+ * 20 structs with 10 members each fit in 20 KiB. Dropped declarations
+ * such as prototypes need memory too, so microblx's ubx.h with its
+ * libc headers takes 135 KiB. Memory is not reclaimed after a failed
+ * parse, nor for the pointer and array types that crefl_type()
+ * derives. So leave some headroom and look up types once at init.
+ * The safest way to size @buf is to try: find the smallest @len for
+ * which parsing your headers succeeds.
  *
  * Return: context or NULL if @buf is NULL or too small
  */

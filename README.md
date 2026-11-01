@@ -37,23 +37,27 @@ Names: header `crefl.h`, prefix `crefl_`, library `-lcreflect`
 
 ## Supported
 
-- primitive types, `stdint.h`/`stddef.h` types, `bool`
+- primitive types, `stdint.h`/`stddef.h` types, `bool`, `__int128`
+  (64 bit hosts, values are accessed as 64 bit), `__builtin_va_list`
+  (opaque)
 - structs, unions, enums, typedefs
 - multi-dimensional arrays, pointers (function pointers as `void *`)
 - bitfields, incl. packed and zero width
 - anonymous and nested struct/union definitions
-- `__attribute__((packed))`, `aligned(n)` on structs and members
+- `__attribute__((packed))`, `aligned(n)` on structs and members,
+  integer `mode(m)` on typedefs and members
 - integer constant expressions in array sizes, enum values and
   bitfield widths with C integer types (`+ - * / % << >> & | ^ ~ !`,
   casts, `sizeof`, `_Alignof`, enum constants, `crefl_define()`)
 - comments; preprocessor lines, functions and variables are skipped
 
-Layout follows the host ABI (SysV/AAPCS, gcc/clang). Not validating:
-check headers with the compiler. Rejected with an error:
-`#pragma pack`, `ms_struct`, `_Complex`, `typeof(expr)`, floating
-point constants in constant expressions, enums needing more than 64
-bits (gcc uses `__int128`). A failed parse leaves the context as it
-was.
+Layout follows the host ABI (SysV/AAPCS, gcc/clang). The parser does
+not validate, so check your headers with the compiler first. It
+rejects with an error what it cannot lay out correctly: `#pragma
+pack`, `ms_struct`, `_Complex`, `typeof(expr)`, `aligned(n)` on
+typedefs (unless n is the natural alignment), floating point
+constants in constant expressions and enums needing more than 64
+bits. A failed parse leaves the context as it was.
 
 ## Build and test
 

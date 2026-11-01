@@ -284,6 +284,17 @@ const crefl_type_t crefl_prims[CREFL_PRIM_NUM] = {
 	PRIM(CREFL_ULONG, unsigned long),
 	PRIM(CREFL_LLONG, long long),
 	PRIM(CREFL_ULLONG, unsigned long long),
+#ifdef __SIZEOF_INT128__
+	PRIM(CREFL_INT128, __int128),
+	PRIM(CREFL_UINT128, unsigned __int128),
+#else
+	[CREFL_INT128] = { .kind = CREFL_PRIM,
+			   .prim = CREFL_INT128,
+			   .name = "__int128" },
+	[CREFL_UINT128] = { .kind = CREFL_PRIM,
+			    .prim = CREFL_UINT128,
+			    .name = "unsigned __int128" },
+#endif
 	PRIM(CREFL_FLOAT, float),
 	PRIM(CREFL_DOUBLE, double),
 	PRIM(CREFL_LDOUBLE, long double),
@@ -311,6 +322,10 @@ static const uint8_t prim_pref_align[CREFL_PRIM_NUM] = {
 	PREF(CREFL_ULONG, unsigned long),
 	PREF(CREFL_LLONG, long long),
 	PREF(CREFL_ULLONG, unsigned long long),
+#ifdef __SIZEOF_INT128__
+	PREF(CREFL_INT128, __int128),
+	PREF(CREFL_UINT128, unsigned __int128),
+#endif
 	PREF(CREFL_FLOAT, float),
 	PREF(CREFL_DOUBLE, double),
 	PREF(CREFL_LDOUBLE, long double),
@@ -319,14 +334,18 @@ static const uint8_t prim_pref_align[CREFL_PRIM_NUM] = {
 #endif
 };
 
+/* arrays may be aligned beyond their element, e.g. __builtin_va_list */
 size_t crefl__pref_align(const crefl_type_t *t)
 {
+	size_t a;
+
 	t = crefl_resolve(t);
+	a = t->align;
 	while (t->kind == CREFL_ARRAY)
 		t = crefl_resolve(t->elem);
 	if (t->kind == CREFL_PRIM && t->prim != CREFL_VOID)
-		return prim_pref_align[t->prim];
-	return t->align;
+		return MAX(a, prim_pref_align[t->prim]);
+	return MAX(a, t->align);
 }
 
 #define PRIM_OF(T)                            \
@@ -350,6 +369,16 @@ size_t crefl__pref_align(const crefl_type_t *t)
 	  .name = #T,            \
 	  .elem = &crefl_prims[PRIM_OF(T)] }
 
+/* opaque, only its layout matters */
+static const crefl_type_t va_list_bytes = {
+	.kind = CREFL_ARRAY,
+	.flags = F_COMPLETE,
+	.elem = &crefl_prims[CREFL_UCHAR],
+	.len = sizeof(va_list),
+	.size = sizeof(va_list),
+	.align = _Alignof(va_list),
+};
+
 static const crefl_type_t builtin_typedefs[] = {
 	BUILTIN(int8_t),
 	BUILTIN(int16_t),
@@ -370,6 +399,19 @@ static const crefl_type_t builtin_typedefs[] = {
 	  .flags = F_COMPLETE,
 	  .name = "bool",
 	  .elem = &crefl_prims[CREFL_BOOL] },
+	/* incomplete without __int128, like their target */
+	{ .kind = CREFL_TYPEDEF,
+	  .flags = F_COMPLETE,
+	  .name = "__int128_t",
+	  .elem = &crefl_prims[CREFL_INT128] },
+	{ .kind = CREFL_TYPEDEF,
+	  .flags = F_COMPLETE,
+	  .name = "__uint128_t",
+	  .elem = &crefl_prims[CREFL_UINT128] },
+	{ .kind = CREFL_TYPEDEF,
+	  .flags = F_COMPLETE,
+	  .name = "__builtin_va_list",
+	  .elem = &va_list_bytes },
 };
 
 const crefl_type_t *crefl__builtin_typedef(const char *name, size_t len)
@@ -510,7 +552,7 @@ static int is_zero_bitfield(const crefl_member_t *m)
 static int is_int(const crefl_type_t *t)
 {
 	return (t->kind == CREFL_PRIM && t->prim >= CREFL_BOOL &&
-		t->prim <= CREFL_ULLONG) ||
+		t->prim <= CREFL_UINT128) ||
 	       t->kind == CREFL_ENUM;
 }
 
@@ -536,6 +578,7 @@ int crefl_is_signed(const crefl_type_t *t)
 	case CREFL_INT:
 	case CREFL_LONG:
 	case CREFL_LLONG:
+	case CREFL_INT128:
 		return 1;
 	default:
 		return is_float(t);
@@ -922,7 +965,10 @@ static void store_raw(crefl_val_t v, size_t size, uint64_t x)
 	}
 }
 
-/* read integer, sign extended into *u if signed */
+/*
+ * read integer, sign extended into *u if signed. -ERANGE if a 128 bit
+ * value does not fit 64 bits.
+ */
 static int int_load(crefl_val_t v, uint64_t *u, int *sgn)
 {
 	const crefl_type_t *t = crefl_resolve(v.t);
@@ -930,6 +976,20 @@ static int int_load(crefl_val_t v, uint64_t *u, int *sgn)
 
 	if (int_info(v, t, &w, sgn))
 		return -EINVAL;
+
+#ifdef __SIZEOF_INT128__
+	if (w == 128) {
+		unsigned __int128 q;
+
+		memcpy(&q, v.p, sizeof(q));
+		if (*sgn ? ((__int128)q < INT64_MIN ||
+			    (__int128)q > INT64_MAX) :
+			   q > UINT64_MAX)
+			return -ERANGE;
+		*u = (uint64_t)q;
+		return 0;
+	}
+#endif
 
 	uint64_t x = v.bit_width ? bits_get(v.p, v.bit_off, w) :
 				   load_raw(v, t->size);
@@ -959,6 +1019,15 @@ static int int_store(crefl_val_t v, uint64_t x, int neg)
 	} else if (x > (sgn ? mask(w - 1) : mask(w))) {
 		return -ERANGE;
 	}
+
+#ifdef __SIZEOF_INT128__
+	if (w == 128) {
+		__int128 q = neg ? (__int128)(int64_t)x : (__int128)x;
+
+		memcpy(v.p, &q, sizeof(q));
+		return 0;
+	}
+#endif
 
 	if (v.bit_width)
 		bits_set(v.p, v.bit_off, w, x & mask(w));
@@ -1035,8 +1104,13 @@ int crefl_get_i64(crefl_val_t v, int64_t *out)
 	uint64_t u;
 	int sgn;
 
-	if (v.t == NULL || int_load(v, &u, &sgn))
+	int ret;
+
+	if (v.t == NULL)
 		return -EINVAL;
+	ret = int_load(v, &u, &sgn);
+	if (ret)
+		return ret;
 	if (!sgn && u > INT64_MAX)
 		return -ERANGE;
 	*out = (int64_t)u;
@@ -1047,7 +1121,7 @@ int crefl_get_u64(crefl_val_t v, uint64_t *out)
 {
 	const crefl_type_t *t;
 	uint64_t u;
-	int sgn;
+	int sgn, ret;
 
 	if (v.t == NULL)
 		return -EINVAL;
@@ -1061,8 +1135,9 @@ int crefl_get_u64(crefl_val_t v, uint64_t *out)
 		return 0;
 	}
 
-	if (int_load(v, &u, &sgn))
-		return -EINVAL;
+	ret = int_load(v, &u, &sgn);
+	if (ret)
+		return ret;
 	if (sgn && (int64_t)u < 0)
 		return -ERANGE;
 	*out = u;
@@ -1081,6 +1156,16 @@ int crefl_get_f64(crefl_val_t v, double *out)
 	t = crefl_resolve(v.t);
 	if (is_float(t))
 		return float_load(v, t, out);
+#ifdef __SIZEOF_INT128__
+	if (t->kind == CREFL_PRIM && t->size == 16 && v.bit_width == 0) {
+		unsigned __int128 q;
+
+		memcpy(&q, v.p, sizeof(q));
+		*out = (t->prim == CREFL_INT128) ? (double)(__int128)q :
+						   (double)q;
+		return 0;
+	}
+#endif
 
 	if (int_load(v, &u, &sgn))
 		return -EINVAL;

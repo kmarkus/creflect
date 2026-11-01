@@ -70,15 +70,15 @@ static const char *const ignored_kws[] = {
 };
 
 static const char *const unsupported_kws[] = {
-	"_Complex",    "__complex__", "__int128",    "_Alignas", "alignas",
-	"__auto_type", "_BitInt",     "_Float16",    "_Float32", "_Float64",
-	"_Decimal32",  "_Decimal64",  "_Decimal128", NULL,
+	"_Complex",   "__complex__", "_Alignas", "alignas",  "__auto_type",
+	"_BitInt",    "_Float16",    "_Float32", "_Float64", "_Decimal32",
+	"_Decimal64", "_Decimal128", NULL,
 };
 
 static const char *const prim_kws[] = {
-	"void",	 "_Bool",  "char",	 "short",      "int",
-	"long",	 "signed", "__signed",	 "__signed__", "unsigned",
-	"float", "double", "__float128", "_Float128",  NULL,
+	"void",	      "_Bool",	   "char",	 "short",    "int",   "long",
+	"signed",     "__signed",  "__signed__", "unsigned", "float", "double",
+	"__float128", "_Float128", "__int128",	 NULL,
 };
 
 static const crefl_type_t *specifiers(struct parser *p, int *is_typedef,
@@ -403,10 +403,41 @@ static int is_attr(struct parser *p)
 #define BIGGEST_ALIGNMENT _Alignof(max_align_t)
 #endif
 
+/* integer modes in bytes, 0 if unsupported (floats, vectors) */
+static unsigned int mode_size(const char *s, size_t len)
+{
+	static const struct {
+		const char *name;
+		unsigned int size;
+	} modes[] = {
+		{ "QI", 1 },
+		{ "HI", 2 },
+		{ "SI", 4 },
+		{ "DI", 8 },
+		{ "TI", 16 },
+		{ "byte", 1 },
+		{ "word", sizeof(long) },
+		{ "pointer", sizeof(void *) },
+	};
+
+	/* __word__ is word */
+	if (len > 4 && strncmp(s, "__", 2) == 0 &&
+	    strncmp(s + len - 2, "__", 2) == 0) {
+		s += 2;
+		len -= 4;
+	}
+	for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
+		if (strlen(modes[i].name) == len &&
+		    strncmp(modes[i].name, s, len) == 0)
+			return modes[i].size;
+	}
+	return 0;
+}
+
 /*
- * gcc attributes, packed and aligned(n) are collected into @a. If
- * @a is NULL they are ignored where harmless (packed) and rejected
- * where they would change the layout (aligned).
+ * gcc attributes, packed, aligned(n) and mode(m) are collected into
+ * @a. If @a is NULL they are ignored where harmless (packed) and
+ * rejected where they would change the layout (aligned, mode).
  */
 static void skip_attrs(struct parser *p, struct crefl_attr *a)
 {
@@ -454,9 +485,24 @@ static void skip_attrs(struct parser *p, struct crefl_attr *a)
 					a->align = (size_t)x;
 				if (!paren)
 					continue;
+			} else if (is_kw(p, "mode") || is_kw(p, "__mode__")) {
+				next(p);
+				expect(p, '(');
+				if (!is(p, T_IDENT))
+					fail(p, -EINVAL, "expected mode");
+				if (a == NULL)
+					fail(p, -EINVAL,
+					     "unsupported: mode attribute here");
+				a->mode = mode_size(p->l.tp, p->l.tl);
+				if (a->mode == 0)
+					fail(p, -EINVAL,
+					     "unsupported: mode '%.*s'",
+					     (int)p->l.tl, p->l.tp);
+				next(p);
+				if (!is(p, ')'))
+					fail(p, -EINVAL, "expected ')'");
 			} else if (is_kw(p, "ms_struct") ||
 				   is_kw(p, "__ms_struct__") ||
-				   is_kw(p, "mode") || is_kw(p, "__mode__") ||
 				   is_kw(p, "vector_size") ||
 				   is_kw(p, "__vector_size__")) {
 				fail(p, -EINVAL, "unsupported attribute '%.*s'",
@@ -533,6 +579,47 @@ static void add_typedef(struct parser *p, const char *name, size_t nl,
 	s->t = td;
 	if (crefl__types_push(p->ctx, td))
 		fail(p, -ENOMEM, "out of memory");
+}
+
+/* the integer type of the size of @a's mode with @t's signedness */
+static const crefl_type_t *apply_mode(struct parser *p, const crefl_type_t *t,
+				      const struct crefl_attr *a)
+{
+	const crefl_type_t *rt = crefl_resolve(t), *m;
+	int sgn = crefl_is_signed(rt);
+	enum crefl_prim prim;
+
+	if (a->mode == 0)
+		return t;
+	if (rt->kind != CREFL_PRIM || rt->prim < CREFL_CHAR ||
+	    rt->prim > CREFL_UINT128)
+		fail(p, -EINVAL, "unsupported: mode of a non-integer type");
+
+	switch (a->mode) {
+	case 1:
+		prim = sgn ? CREFL_SCHAR : CREFL_UCHAR;
+		break;
+	case 2:
+		prim = sgn ? CREFL_SHORT : CREFL_USHORT;
+		break;
+	case 4:
+		prim = sgn ? CREFL_INT : CREFL_UINT;
+		break;
+	case 8:
+		if (sizeof(long) == 8)
+			prim = sgn ? CREFL_LONG : CREFL_ULONG;
+		else
+			prim = sgn ? CREFL_LLONG : CREFL_ULLONG;
+		break;
+	default:
+		prim = sgn ? CREFL_INT128 : CREFL_UINT128;
+		break;
+	}
+
+	m = &crefl_prims[prim];
+	if (!crefl_is_complete(m))
+		fail(p, -EINVAL, "unsupported: mode needs __int128");
+	return m;
 }
 
 /* find or create a tag, checks that the kind matches */
@@ -665,6 +752,7 @@ static void struct_body(struct parser *p, struct mlist *ml)
 				fail(p, -EINVAL, "expected member name");
 			}
 
+			t = apply_mode(p, t, &ma);
 			madd(p, ml, name, nl, t, (unsigned int)width, &ma);
 		} while (accept(p, ','));
 
@@ -860,13 +948,14 @@ static const crefl_type_t *enum_spec(struct parser *p)
 struct spec {
 	unsigned int n_void, n_bool, n_char, n_short, n_int, n_long;
 	unsigned int n_signed, n_unsigned, n_float, n_double, n_float128;
+	unsigned int n_int128;
 };
 
 static int any_prim(const struct spec *s)
 {
 	return s->n_void || s->n_bool || s->n_char || s->n_short || s->n_int ||
 	       s->n_long || s->n_signed || s->n_unsigned || s->n_float ||
-	       s->n_double || s->n_float128;
+	       s->n_double || s->n_float128 || s->n_int128;
 }
 
 static enum crefl_prim combine(struct parser *p, const struct spec *s)
@@ -880,6 +969,12 @@ static enum crefl_prim combine(struct parser *p, const struct spec *s)
 		return CREFL_VOID;
 	if (s->n_bool)
 		return CREFL_BOOL;
+	if (s->n_int128) {
+		if (s->n_int128 > 1 || s->n_char || s->n_short || s->n_int ||
+		    s->n_long || s->n_float || s->n_double || s->n_float128)
+			fail(p, -EINVAL, "invalid type specifiers");
+		return u ? CREFL_UINT128 : CREFL_INT128;
+	}
 	if (s->n_float128)
 		return CREFL_FLOAT128;
 	if (s->n_float)
@@ -966,6 +1061,8 @@ static const crefl_type_t *specifiers(struct parser *p, int *is_typedef,
 			else if (is_kw(p, "__float128") ||
 				 is_kw(p, "_Float128"))
 				s.n_float128++;
+			else if (is_kw(p, "__int128"))
+				s.n_int128++;
 			else
 				s.n_signed++;
 			if (t)
@@ -1472,7 +1569,9 @@ static void external_decl(struct parser *p)
 		skip_attrs(p, &da);
 
 		if (is_td) {
-			if (da.align)
+			t = apply_mode(p, t, &da);
+			/* a no-op if natural, e.g. linux/types.h __s128 */
+			if (da.align && da.align != crefl_alignof(t))
 				fail(p, -EINVAL,
 				     "unsupported: aligned typedef");
 			if (name == NULL)
