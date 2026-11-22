@@ -1,14 +1,14 @@
 <div align="center">
 
-# libcreflect: reflective C data types
+# creflect: reflective C data types
 
-[![pipeline status](https://gitlab.com/kmarkus/libcreflect/badges/main/pipeline.svg)](https://gitlab.com/kmarkus/libcreflect/-/pipelines)
+[![pipeline status](https://gitlab.com/kmarkus/creflect/badges/main/pipeline.svg)](https://gitlab.com/kmarkus/creflect/-/pipelines)
 
 **[Supported](#supported) · [Build and test](#build-and-test) · [Usage](#usage) · [crefl-tool](#crefl-tool) · [Lua](#lua) · [License](#license)**
 
 </div>
 
-libcreflect reads C type declarations at runtime and gives
+creflect reads C type declarations at runtime and gives
 generic access to data of those types, without code generation or
 compiler support. It is plain C11 and needs nothing beyond libc.
 

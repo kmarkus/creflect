@@ -22,7 +22,7 @@ endif()
 cmake_host_system_information(RESULT CREFL_NCPU QUERY NUMBER_OF_LOGICAL_CORES)
 set(CMAKE_CTEST_ARGUMENTS -j${CREFL_NCPU} --output-on-failure)
 
-option(BUILD_SHARED_LIBS "build libcreflect as a shared library, OFF: static" ON)
+option(BUILD_SHARED_LIBS "build creflect as a shared library, OFF: static" ON)
 option(CREFL_SANITIZE "build unit tests with ASan/UBSan" ON)
 option(CREFL_FUZZ "build the libFuzzer harness (clang only)" OFF)
 set(CREFL_RANDOM_SEEDS 10 CACHE STRING "random type headers per oracle configuration")
